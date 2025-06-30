@@ -1,0 +1,22 @@
+{
+  "name": "image-translator",
+  "version": "1.0.0",
+  "description": "图片翻译软件",
+  "scripts": {
+    "install:backend": "cd backend && npm install",
+    "install:frontend": "cd frontend && npm install",
+    "install:all": "npm run install:backend && npm run install:frontend",
+    "install:paddleocr": "node install_paddleocr.js",
+    "start:backend": "cd backend && npm start",
+    "start:frontend": "cd frontend && npm start",
+    "setup": "npm run install:all && npm run install:paddleocr"
+  },
+  "dependencies": {
+    "@vitalets/google-translate-api": "^9.2.1",
+    "axios": "^1.10.0",
+    "canvas": "^3.1.1",
+    "glob": "^11.0.3",
+    "node.js": "^0.0.1-security",
+    "simple-spellchecker": "^1.0.2"
+  }
+}
