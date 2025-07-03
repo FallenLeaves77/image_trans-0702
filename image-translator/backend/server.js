@@ -5,20 +5,16 @@
  * 1. 百度智能云OCR API: 访问 https://cloud.baidu.com/product/ocr 注册并创建应用
  *    - 获取BAIDU_APP_ID, BAIDU_API_KEY 和 BAIDU_SECRET_KEY
  * 
- * 2. 百度翻译API: 访问 http://api.fanyi.baidu.com/api/trans/product/index 注册
- *    - 获取BAIDU_TRANSLATE_APP_ID 和 BAIDU_TRANSLATE_KEY
- * 
- * 3. 创建 .env 文件在后端根目录，配置以下内容:
+ * 2. 创建 .env 文件在后端根目录，配置以下内容:
  *    ```
  *    BAIDU_APP_ID=119352969
  *    BAIDU_API_KEY=yrWwaxSLv8JyrUBJxYmsSVKP
  *    BAIDU_SECRET_KEY=14j1Q2uDRxmUjIrnwxR1W1T74o6FWlkN
- *    BAIDU_TRANSLATE_APP_ID=20250626002390545
- *    BAIDU_TRANSLATE_KEY=FBgfhvu0ieM284dRNJ9G
+ *    DEEPSEEK_API_KEY=sk-4d5297ac14d34747bc366cdcab4e00ac
  *    PORT=3001
  *    ```
  * 
- * 4. 如不配置百度API，系统将自动使用本地的PaddleOCR备选方案
+ * 3. 如不配置百度API，系统将自动使用本地的PaddleOCR备选方案
  */
 
 const express = require('express');
@@ -36,18 +32,25 @@ const dotenv = require('dotenv');
 const translate = require('@vitalets/google-translate-api').translate;
 // 引入百度智能云SDK
 const AipOcrClient = require('baidu-aip-sdk').ocr;
-const AipNlpClient = require('baidu-aip-sdk').nlp;
 const axios = require('axios');
+// 引入Deepseek API客户端
+const { DeepseekClient } = require('./deepseek');
 
 // 加载环境变量
 dotenv.config();
 
+// 手动设置环境变量（如果.env文件不存在或不完整）
+if (!process.env.DEEPSEEK_API_KEY) {
+  console.log('未检测到DEEPSEEK_API_KEY环境变量，正在手动设置...');
+  process.env.DEEPSEEK_API_KEY = 'sk-4d5297ac14d34747bc366cdcab4e00ac';
+}
+
 // 注册中文字体
-const fontPath = path.join(__dirname, 'fonts', 'SimHei.ttf');
+const fontPath = path.join(__dirname, 'fonts', 'SimHei.otf');
 if (fs.existsSync(fontPath)) {
   try {
     registerFont(fontPath, { family: 'SimHei' });
-    console.log('成功注册字体: SimHei.ttf');
+    console.log('成功注册字体: SimHei.otf');
   } catch(e) {
     console.error('注册字体失败:', e);
   }
@@ -57,63 +60,79 @@ if (fs.existsSync(fontPath)) {
 
 // 设置百度API参数 - 实际应用中应从环境变量或配置文件中读取
 // 这里使用PaddleOCR作为备用选项，避免API错误阻塞功能
-const BAIDU_APP_ID = process.env.BAIDU_APP_ID || ''; 
+const BAIDU_APP_ID = process.env.BAIDU_APP_ID || '';
 const BAIDU_API_KEY = process.env.BAIDU_API_KEY || '';
 const BAIDU_SECRET_KEY = process.env.BAIDU_SECRET_KEY || '';
-const BAIDU_TRANSLATE_APP_ID = process.env.BAIDU_TRANSLATE_APP_ID || '';
-const BAIDU_TRANSLATE_KEY = process.env.BAIDU_TRANSLATE_KEY || '';
+
+// 设置Deepseek API密钥
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 
 // PaddleOCR模型路径配置
 const PADDLE_OCR_MODEL_DIR = path.join(__dirname, 'paddle_models');
 const PADDLE_OCR_LANG_DIR = path.join(__dirname, 'lang-data');
 
-// 添加临时存储，用于客户端动态提供的API密钥
-let tempCredentials = {
-  baiduOcr: null,
-  baiduTranslate: null
-};
+// 所有API密钥将从.env文件读取，不再支持动态配置
 
 // 创建百度OCR和翻译客户端实例
 let baiduOcrClient = null;
-let baiduNlpClient = null;
+// 创建Deepseek客户端实例
+let deepseekClient = null;
 
 // 仅在配置了API密钥的情况下初始化百度客户端
 if (BAIDU_APP_ID && BAIDU_API_KEY && BAIDU_SECRET_KEY) {
   try {
     console.log('初始化百度OCR客户端...');
     baiduOcrClient = new AipOcrClient(BAIDU_APP_ID, BAIDU_API_KEY, BAIDU_SECRET_KEY);
-    baiduNlpClient = new AipNlpClient(BAIDU_APP_ID, BAIDU_API_KEY, BAIDU_SECRET_KEY);
     console.log('百度OCR客户端初始化成功');
   } catch (error) {
     console.error('百度OCR客户端初始化失败:', error);
     baiduOcrClient = null;
-    baiduNlpClient = null;
   }
 }
 
-// 获取百度OCR客户端（优先使用临时凭证）
-function getBaiduOcrClient() {
-  if (tempCredentials && tempCredentials.baiduOcr) {
-    console.log('使用临时OCR凭证创建客户端');
-    return new AipOcrClient(
-      tempCredentials.baiduOcr.appId,
-      tempCredentials.baiduOcr.apiKey,
-      tempCredentials.baiduOcr.secretKey
-    );
+// 初始化Deepseek客户端
+if (DEEPSEEK_API_KEY) {
+  try {
+    console.log('初始化Deepseek客户端...');
+    deepseekClient = new DeepseekClient(DEEPSEEK_API_KEY);
+    console.log('Deepseek客户端初始化成功');
+  } catch (error) {
+    console.error('Deepseek客户端初始化失败:', error);
+    deepseekClient = null;
   }
-  
+}
+
+// 获取百度OCR客户端
+function getBaiduOcrClient() {
   if (baiduOcrClient) {
     return baiduOcrClient;
   }
   
-  // 尝试从环境变量重新初始化客户端
+  // 尝试从环境变量初始化客户端
   if (process.env.BAIDU_APP_ID && process.env.BAIDU_API_KEY && process.env.BAIDU_SECRET_KEY) {
-    console.log('从环境变量重新初始化OCR客户端');
+    console.log('从环境变量初始化OCR客户端');
     baiduOcrClient = new AipOcrClient(process.env.BAIDU_APP_ID, process.env.BAIDU_API_KEY, process.env.BAIDU_SECRET_KEY);
     return baiduOcrClient;
   }
   
-  console.log('没有找到有效的百度OCR凭证');
+  console.log('没有找到有效的百度OCR凭证，请在.env文件中配置');
+  return null;
+}
+
+// 获取Deepseek客户端
+function getDeepseekClient() {
+  if (deepseekClient) {
+    return deepseekClient;
+  }
+  
+  // 尝试从环境变量初始化客户端
+  if (process.env.DEEPSEEK_API_KEY) {
+    console.log('从环境变量初始化Deepseek客户端');
+    deepseekClient = new DeepseekClient(process.env.DEEPSEEK_API_KEY);
+    return deepseekClient;
+  }
+  
+  console.log('没有找到有效的Deepseek凭证，请在.env文件中配置');
   return null;
 }
 
@@ -350,21 +369,21 @@ with open('${outputJsonPath.replace(/\\/g, '\\\\')}', 'w', encoding='utf-8') as 
 
 // 百度OCR文本识别函数
 async function recognizeTextByBaidu(imagePath, options = {}) {
-  const { languageType = 'auto', ocrApiVersion = 'accurate_basic' } = options;
+  const { languageType = 'auto', ocrApiVersion = 'accurate' } = options;
 
   console.log(`使用百度智能云OCR进行文本识别 (版本: ${ocrApiVersion}, 语言: ${languageType})...`);
   
   // 获取客户端实例
   const client = getBaiduOcrClient();
   
-  if (!client) {
-    console.log('未配置百度OCR客户端，跳过百度OCR识别');
-    return { 
-      success: false, 
-      message: '未配置百度OCR客户端，请先在页面上配置API密钥', 
-      textRegions: [] 
-    };
-  }
+      if (!client) {
+      console.log('未配置百度OCR客户端，跳过百度OCR识别');
+      return { 
+        success: false, 
+        message: '未配置百度OCR客户端，请在.env文件中配置API密钥', 
+        textRegions: [] 
+      };
+    }
 
   try {
     // 读取图片内容
@@ -432,16 +451,35 @@ async function recognizeTextByBaidu(imagePath, options = {}) {
     
     // 处理识别结果
     if (result && result.words_result && result.words_result.length > 0) {
-      // 转换为标准格式
+      // 转换为标准格式，优先使用vertexes_location计算精确边界
       const textRegions = result.words_result.map((word, index) => {
-        const location = word.location || { left: 0, top: 0, width: 100, height: 30 };
+        let location;
+        // 如果提供了顶点坐标，则用它计算最精确的边界框
+        if (word.vertexes_location && Array.isArray(word.vertexes_location) && word.vertexes_location.length === 4) {
+          const xCoords = word.vertexes_location.map(v => v.x);
+          const yCoords = word.vertexes_location.map(v => v.y);
+          const minX = Math.min(...xCoords);
+          const minY = Math.min(...yCoords);
+          const maxX = Math.max(...xCoords);
+          const maxY = Math.max(...yCoords);
+          location = {
+            left: minX,
+            top: minY,
+            width: maxX - minX,
+            height: maxY - minY
+          };
+        } else {
+          // 否则，回退到使用标准的矩形位置
+          location = word.location || { left: 0, top: 0, width: 100, height: 30 };
+        }
+
         return {
           text: word.words,
           x: location.left,
           y: location.top,
           width: location.width,
           height: location.height,
-          confidence: 90, // 百度OCR通常不返回置信度
+          confidence: (word.probability && word.probability.average) ? word.probability.average * 100 : 90,
           translated: '', // 待翻译
           translateSource: ''
         };
@@ -470,7 +508,7 @@ async function recognizeTextByBaidu(imagePath, options = {}) {
   }
 }
 
-// 更新betterTranslate函数，移除本地映射查找
+// 更新betterTranslate函数，移除本地映射查找，只使用Deepseek
 async function betterTranslate(text, targetLang = 'zh-CN') {
   // 检查缓存
   const cacheKey = `${text}_${targetLang}`;
@@ -498,90 +536,32 @@ async function betterTranslate(text, targetLang = 'zh-CN') {
       apiTargetLang = 'en';
     }
     
-    // 检测是否包含混合语言（中英文混合）
-    const hasChinese = /[\u4e00-\u9fa5]/.test(cleanText);
-    const hasEnglish = /[a-zA-Z]/.test(cleanText);
-    const isMixedLanguage = hasChinese && hasEnglish;
-    
-    // 如果是混合语言且目标是中文，强制指定源语言为英文，确保整个文本都被翻译
-    let fromLang = 'auto';
-    if (isMixedLanguage && apiTargetLang === 'zh') {
-      // 对混合文本特殊处理，提取英文部分单独翻译，然后将结果合并回原文
-      const englishWords = cleanText.match(/[a-zA-Z]+/g) || [];
-      if (englishWords.length > 0) {
-        let modifiedText = cleanText;
-        // 创建英文单词到翻译结果的映射
-        const wordTranslations = {};
-        
-        // 对每个英文单词进行翻译
-        for (const word of englishWords) {
-          try {
-            const wordTranslation = await translateByBaidu(word, 'en', apiTargetLang);
-            if (wordTranslation && wordTranslation.text) {
-              wordTranslations[word] = wordTranslation.text;
-              // 替换文本中的英文为翻译结果
-              modifiedText = modifiedText.replace(new RegExp(word, 'g'), wordTranslations[word]);
-            }
-          } catch (err) {
-            console.warn(`无法翻译单词 "${word}":`, err);
-          }
-        }
-        
-        // 缓存结果
-        translationCache.set(cacheKey, modifiedText);
+    try {
+      // 使用Deepseek进行翻译
+      const deepseekResult = await translateByDeepseek(cleanText, apiTargetLang);
+      
+      if (deepseekResult && deepseekResult.text) {
+        console.log(`Deepseek翻译结果: "${deepseekResult.text}"`);
+        translationCache.set(cacheKey, deepseekResult.text);
         return {
-          text: modifiedText,
-          source: 'baidu_api_mixed'
+          text: deepseekResult.text,
+          source: 'deepseek'
         };
       }
-    }
-    
-    try {
-      // 尝试使用百度翻译API
-      const baiduResult = await translateByBaidu(cleanText, fromLang, apiTargetLang);
-      
-      if (baiduResult && baiduResult.text) {
-        console.log(`百度翻译结果: "${baiduResult.text}"`);
-        translationCache.set(cacheKey, baiduResult.text);
-        return {
-          text: baiduResult.text,
-          source: 'baidu_api'
-        };
-      }
-    } catch (baiduErr) {
-      console.warn('百度翻译失败，尝试使用Google翻译:', baiduErr);
-      // 百度翻译失败，尝试使用Google翻译API
-    }
-    
-    try {
-      // 设置较短的超时时间，防止长时间等待
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5秒超时
-      
-      // 调用Google翻译API作为备选方案
-      const res = await translate(cleanText, { 
-        to: apiTargetLang,
-        fetchOptions: { signal: controller.signal }
-      });
-      
-      clearTimeout(timeoutId);
-      const translatedText = res.text;
-      
-      // 缓存结果
-      translationCache.set(cacheKey, translatedText);
-      console.log(`Google翻译结果: "${translatedText}"`);
-      
-      return { 
-        text: translatedText,
-        source: 'google_api'
-      };
-    } catch (err) {
-      console.error('翻译API调用失败:', err);
+    } catch (deepseekErr) {
+      console.warn('Deepseek翻译失败，返回原文:', deepseekErr);
+      // 如果Deepseek翻译失败，返回原文
       return { 
         text: cleanText,
         source: 'original'
-      }; // 无法翻译时返回原文
+      };
     }
+
+    // 若到达此处，表示翻译失败，返回原文
+    return { 
+      text: cleanText,
+      source: 'original'
+    };
   } catch (err) {
     console.error('翻译处理失败，返回原文:', err);
     return { 
@@ -591,29 +571,23 @@ async function betterTranslate(text, targetLang = 'zh-CN') {
   }
 }
 
-// 修改百度翻译API函数
-async function translateByBaidu(text, from = 'auto', to = 'zh') {
+// 修改Deepseek翻译函数
+async function translateByDeepseek(text, targetLang = 'zh') {
   if (!text || text.trim() === '') {
     return { success: false, text: '', message: '空文本无需翻译' };
   }
   
-  console.log(`使用百度翻译API: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`);
+  console.log(`使用Deepseek翻译: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`);
   
-  // 获取百度翻译凭证
-  let appId = BAIDU_TRANSLATE_APP_ID;
-  let key = BAIDU_TRANSLATE_KEY;
+  // 获取Deepseek客户端
+  const client = getDeepseekClient();
   
-  // 优先使用临时凭证
-  if (tempCredentials.baiduTranslate) {
-    appId = tempCredentials.baiduTranslate.appId;
-    key = tempCredentials.baiduTranslate.key;
+  if (!client) {
+    console.log('未配置Deepseek API，返回原文');
+    return { success: false, text, message: '未配置Deepseek API' };
   }
   
-  if (!appId || !key) {
-    return { success: false, text, message: '未配置百度翻译API' };
-  }
-  
-  const cacheKey = `${text}_${from}_${to}`;
+  const cacheKey = `deepseek_${text}_${targetLang}`;
   
   // 检查缓存
   if (translationCache.has(cacheKey)) {
@@ -623,80 +597,80 @@ async function translateByBaidu(text, from = 'auto', to = 'zh') {
     };
   }
 
-  // 检查是否配置了百度翻译API
-  if (!BAIDU_TRANSLATE_APP_ID || !BAIDU_TRANSLATE_KEY) {
-    console.log('百度翻译API未配置，返回原文');
-    return {
-      text: text,
-      source: 'no_api' 
-    };
-  }
-  
   try {
-    // 构建请求参数
-    const salt = Date.now();
-    const sign = require('crypto')
-      .createHash('md5')
-      .update(appId + text + salt + key)
-      .digest('hex');
-    
-    // 调整语言代码
-    let fromLang = from, toLang = to;
-    
-    // 转换语言代码为百度API格式
-    if (from === 'auto') fromLang = 'auto';
-    if (from === 'chi_sim' || from === 'zh') fromLang = 'zh';
-    if (from === 'eng') fromLang = 'en';
-    if (from === 'jpn') fromLang = 'jp';
-    if (from === 'kor') fromLang = 'kor';
-    
-    if (to === 'chi_sim' || to === 'zh') toLang = 'zh';
-    if (to === 'eng') toLang = 'en';
-    if (to === 'jpn') toLang = 'jp';
-    if (to === 'kor') toLang = 'kor';
-    
-    // 发送HTTP请求到百度翻译API
-    const response = await fetch(`http://api.fanyi.baidu.com/api/trans/vip/translate?q=${encodeURIComponent(text)}&from=${fromLang}&to=${toLang}&appid=${appId}&salt=${salt}&sign=${sign}`);
-    
-    if (!response.ok) {
-      throw new Error(`HTTP错误: ${response.status}`);
+    // 准备提示词
+    let prompt = '仅输出中文，不要输出任何其他内容，不要输出解释、说明、标题、引言或结语';
+    if (targetLang === 'zh') {
+      prompt = `直接翻译：${text}\n\n仅输出中文翻译结果，不要输出任何其他内容，不要输出解释、说明、标题、引言或结语。`;
+    } else if (targetLang === 'en') {
+      prompt = `Direct translation: ${text}\n\nOutput only the English translation, without any explanations, notes, titles, introduction or conclusion.`;
+    } else if (targetLang === 'jp') {
+      prompt = `Direct translation: ${text}\n\nOutput only the Japanese translation, without any explanations, notes, titles, introduction or conclusion.`;
+    } else if (targetLang === 'kor') {
+      prompt = `Direct translation: ${text}\n\nOutput only the Korean translation, without any explanations, notes, titles, introduction or conclusion.`;
+    } else {
+      // 默认使用英文提示，要求翻译到目标语言
+      prompt = `Direct translation: ${text}\n\nOutput only the ${targetLang} translation, without any explanations, notes, titles, introduction or conclusion.`;
     }
     
-    const data = await response.json();
+    // 调用Deepseek API
+    let translatedText = await client.translate(prompt);
     
-    // 检查API响应错误
-    if (data.error_code) {
-      throw new Error(`百度翻译错误: ${data.error_msg}`);
-    }
+    // 清理翻译结果，移除可能的说明文字
+    translatedText = cleanTranslationResult(translatedText, text);
     
-    // 提取翻译结果
-    const translatedText = data.trans_result && data.trans_result[0] ? 
-                          data.trans_result[0].dst : text;
-    
-    // 缓存结果                      
+    // 缓存结果
     translationCache.set(cacheKey, translatedText);
     
     return {
       text: translatedText,
-      source: 'baidu_api'
+      source: 'deepseek'
     };
   } catch (error) {
-    console.error('百度翻译API错误:', error);
-    
-    // 使用谷歌翻译API作为备选
-    try {
-      return await translate(text, { to: to === 'zh' ? 'zh-CN' : to });
-    } catch (translateError) {
-      console.error('备选翻译也失败:', translateError);
-      throw error;
-    }
+    console.error('Deepseek翻译API错误:', error);
+    return { text, source: 'original' }; // 翻译失败时返回原文
   }
+}
+
+/**
+ * 清理翻译结果，移除可能的说明文字
+ * @param {string} result - API返回的翻译结果
+ * @param {string} originalText - 原始文本
+ * @returns {string} 清理后的翻译结果
+ */
+function cleanTranslationResult(result, originalText) {
+  if (!result) return originalText;
+  
+  // 移除可能的标题和说明
+  let cleaned = result;
+  
+  // 删除"翻译结果："等前缀
+  cleaned = cleaned.replace(/^(翻译结果[：:]\s*|Translation[：:]\s*|以下是[^]*?的翻译[：:]\s*)/i, '');
+  
+  // 删除可能存在的任务说明和规则说明部分
+  cleaned = cleaned.replace(/【[^】]*?翻译任务[^】]*?】[^]*?【/g, '【');
+  cleaned = cleaned.replace(/【[^】]*?处理原则[^】]*?】[^]*/g, '');
+  
+  // 删除多余的换行和空格
+  cleaned = cleaned.trim();
+  
+  // 如果清理后文本为空，返回原文
+  if (!cleaned) {
+    return originalText;
+  }
+  
+  return cleaned;
 }
 
 // 将翻译后的文字渲染到图片上 - 包含自适应文本框功能
 async function renderTranslatedText(imagePath, textRegions) {
   try {
     console.log('开始渲染覆盖式翻译文本...');
+    // 添加调试信息，显示要渲染的翻译结果
+    console.log(`准备渲染${textRegions.length}个文本区域的翻译结果`);
+    textRegions.forEach((region, index) => {
+      console.log(`区域${index+1}：原文="${region.text}" 翻译="${region.translated || '无翻译'}" 来源=${region.translateSource || '未知'}`);
+    });
 
     const image = await loadImage(imagePath);
     const jimpImage = await Jimp.read(imagePath); // 用于拾取颜色
@@ -710,9 +684,38 @@ async function renderTranslatedText(imagePath, textRegions) {
 
     let processedCount = 0;
     let skippedCount = 0;
-    const padding = 2; // 增加填充边距，确保完全覆盖
-    const clamp = (num, min, max) => Math.min(Math.max(num, min), max);
+    const padding = 1; // 减小边框，更加贴近原文字区域
 
+    // 预先分析图像中的主要颜色和背景特征
+    // 这有助于保持背景颜色一致性
+    const globalBackgroundSamples = [];
+    
+    // 随机采样全图的一些点作为全局背景参考
+    const sampleCount = 50;
+    for (let i = 0; i < sampleCount; i++) {
+      const x = Math.floor(Math.random() * width);
+      const y = Math.floor(Math.random() * height);
+      const color = jimpImage.getPixelColor(x, y);
+      globalBackgroundSamples.push(Jimp.intToRGBA(color));
+    }
+    
+    // 分析全局背景颜色特征
+    let avgGlobalR = 0, avgGlobalG = 0, avgGlobalB = 0;
+    globalBackgroundSamples.forEach(sample => {
+      avgGlobalR += sample.r;
+      avgGlobalG += sample.g;
+      avgGlobalB += sample.b;
+    });
+    
+    avgGlobalR = Math.round(avgGlobalR / globalBackgroundSamples.length);
+    avgGlobalG = Math.round(avgGlobalG / globalBackgroundSamples.length);
+    avgGlobalB = Math.round(avgGlobalB / globalBackgroundSamples.length);
+    
+    // 判断图像整体是否偏亮或偏暗
+    const globalLuminance = 0.299 * avgGlobalR + 0.587 * avgGlobalG + 0.114 * avgGlobalB;
+    const isLightImage = globalLuminance > 170;
+    const isDarkImage = globalLuminance < 85;
+    
     for (const region of textRegions) {
       const textToRender = region.translated || region.text;
       if (!textToRender || textToRender.trim() === '') {
@@ -720,93 +723,328 @@ async function renderTranslatedText(imagePath, textRegions) {
         continue;
       }
 
-      // 2. 升级版智能覆盖：通过采样周围颜色来确定背景色
+      // 采样策略改进 - 使用更智能的采样点选择
       const { width: imageWidth, height: imageHeight } = jimpImage.bitmap;
-      const offset = 3; // 从文本框向外采样的距离
-
-      const samplePoints = [
-        jimpImage.getPixelColor(clamp(region.x - offset, 0, imageWidth - 1), clamp(region.y - offset, 0, imageHeight - 1)),
-        jimpImage.getPixelColor(clamp(region.x + region.width + offset, 0, imageWidth - 1), clamp(region.y - offset, 0, imageHeight - 1)),
-        jimpImage.getPixelColor(clamp(region.x - offset, 0, imageWidth - 1), clamp(region.y + region.height + offset, 0, imageHeight - 1)),
-        jimpImage.getPixelColor(clamp(region.x + region.width + offset, 0, imageWidth - 1), clamp(region.y + region.height + offset, 0, imageHeight - 1)),
-        jimpImage.getPixelColor(clamp(region.x + region.width / 2, 0, imageWidth - 1), clamp(region.y - offset, 0, imageHeight - 1)),
-        jimpImage.getPixelColor(clamp(region.x + region.width / 2, 0, imageWidth - 1), clamp(region.y + region.height + offset, 0, imageHeight - 1))
-      ].map(c => Jimp.intToRGBA(c));
       
-      const avgColor = samplePoints.reduce((acc, c) => ({
-        r: acc.r + c.r,
-        g: acc.g + c.g,
-        b: acc.b + c.b,
-      }), { r: 0, g: 0, b: 0 });
-
-      avgColor.r = Math.round(avgColor.r / samplePoints.length);
-      avgColor.g = Math.round(avgColor.g / samplePoints.length);
-      avgColor.b = Math.round(avgColor.b / samplePoints.length);
-
-      ctx.fillStyle = `rgb(${avgColor.r}, ${avgColor.g}, ${avgColor.b})`;
+      // 多重采样策略
+      let samplePoints = [];
       
-      // 绘制色块覆盖原文
+      // 1. 直接的周围区域采样 - 紧贴文本区域的外围
+      const margin = 3; // 边缘距离文本区域的像素数
+      
+      // 上边缘采样
+      if (region.y > margin) {
+        for (let i = 0; i < 5; i++) {
+          const x = region.x + region.width * (i + 0.5) / 5;
+          const y = Math.max(0, region.y - margin);
+          if (x >= 0 && x < imageWidth)
+            samplePoints.push([Math.floor(x), Math.floor(y)]);
+        }
+      }
+      
+      // 下边缘采样
+      if (region.y + region.height + margin < imageHeight) {
+        for (let i = 0; i < 5; i++) {
+          const x = region.x + region.width * (i + 0.5) / 5;
+          const y = Math.min(imageHeight - 1, region.y + region.height + margin);
+          if (x >= 0 && x < imageWidth)
+            samplePoints.push([Math.floor(x), Math.floor(y)]);
+        }
+      }
+      
+      // 左边缘采样
+      if (region.x > margin) {
+        for (let i = 0; i < 5; i++) {
+          const x = Math.max(0, region.x - margin);
+          const y = region.y + region.height * (i + 0.5) / 5;
+          if (y >= 0 && y < imageHeight)
+            samplePoints.push([Math.floor(x), Math.floor(y)]);
+        }
+      }
+      
+      // 右边缘采样
+      if (region.x + region.width + margin < imageWidth) {
+        for (let i = 0; i < 5; i++) {
+          const x = Math.min(imageWidth - 1, region.x + region.width + margin);
+          const y = region.y + region.height * (i + 0.5) / 5;
+          if (y >= 0 && y < imageHeight)
+            samplePoints.push([Math.floor(x), Math.floor(y)]);
+        }
+      }
+      
+      // 2. 扩大区域采样 - 在更大范围内采样
+      const expandArea = 15; // 扩大采样范围
+      
+      // 采样文本框外围更大区域的四角
+      const corners = [
+        [Math.max(0, region.x - expandArea), Math.max(0, region.y - expandArea)],
+        [Math.min(imageWidth - 1, region.x + region.width + expandArea), Math.max(0, region.y - expandArea)],
+        [Math.max(0, region.x - expandArea), Math.min(imageHeight - 1, region.y + region.height + expandArea)],
+        [Math.min(imageWidth - 1, region.x + region.width + expandArea), Math.min(imageHeight - 1, region.y + region.height + expandArea)]
+      ];
+      
+      samplePoints = [...samplePoints, ...corners];
+      
+      // 3. 如果采样点不足，增加更多随机采样点
+      if (samplePoints.length < 15) {
+        for (let i = 0; i < 10; i++) {
+          const direction = i % 4; // 0: 上, 1: 右, 2: 下, 3: 左
+          let x, y;
+          
+          switch (direction) {
+            case 0: // 上方
+              x = region.x + Math.random() * region.width;
+              y = Math.max(0, region.y - Math.random() * 20 - 5);
+              break;
+            case 1: // 右方
+              x = Math.min(imageWidth - 1, region.x + region.width + Math.random() * 20 + 5);
+              y = region.y + Math.random() * region.height;
+              break;
+            case 2: // 下方
+              x = region.x + Math.random() * region.width;
+              y = Math.min(imageHeight - 1, region.y + region.height + Math.random() * 20 + 5);
+              break;
+            case 3: // 左方
+              x = Math.max(0, region.x - Math.random() * 20 - 5);
+              y = region.y + Math.random() * region.height;
+              break;
+          }
+          
+          samplePoints.push([Math.floor(x), Math.floor(y)]);
+        }
+      }
+      
+      // 4. 获取所有采样点的颜色
+      const colorSamples = [];
+      const seenCoordinates = new Set(); // 避免重复的坐标
+      
+      for (const [x, y] of samplePoints) {
+        const coordKey = `${x},${y}`;
+        if (!seenCoordinates.has(coordKey)) {
+          seenCoordinates.add(coordKey);
+          const color = Jimp.intToRGBA(jimpImage.getPixelColor(x, y));
+          colorSamples.push({
+            x, y, color
+          });
+        }
+      }
+      
+      // 5. 分析采样得到的颜色
+      // 5.1 统计不同颜色的出现频率
+      const colorFrequency = {};
+      const quantizeLevel = 8; // 颜色量化级别，数值越小颜色越精确
+      
+      colorSamples.forEach(sample => {
+        // 颜色量化 - 降低颜色精度以便于统计相似颜色
+        const r = Math.floor(sample.color.r / quantizeLevel) * quantizeLevel;
+        const g = Math.floor(sample.color.g / quantizeLevel) * quantizeLevel;
+        const b = Math.floor(sample.color.b / quantizeLevel) * quantizeLevel;
+        
+        const colorKey = `${r},${g},${b}`;
+        
+        if (!colorFrequency[colorKey]) {
+          colorFrequency[colorKey] = {
+            count: 1,
+            r: sample.color.r,
+            g: sample.color.g,
+            b: sample.color.b,
+            samples: [sample]
+          };
+        } else {
+          const entry = colorFrequency[colorKey];
+          entry.count++;
+          entry.r += sample.color.r;
+          entry.g += sample.color.g;
+          entry.b += sample.color.b;
+          entry.samples.push(sample);
+        }
+      });
+      
+      // 5.2 排序找出主要颜色
+      const colorEntries = Object.values(colorFrequency).map(entry => ({
+        ...entry,
+        avgR: Math.round(entry.r / entry.count),
+        avgG: Math.round(entry.g / entry.count),
+        avgB: Math.round(entry.b / entry.count),
+        percentage: (entry.count / colorSamples.length) * 100
+      }));
+      
+      colorEntries.sort((a, b) => b.count - a.count);
+      
+      // 5.3 判断是否有明显的主颜色
+      const dominantColor = colorEntries[0];
+      const isStrongDominant = dominantColor && dominantColor.percentage > 60;
+      
+      // 5.4 判断是否是特殊区域 - 如UI元素、文本框等
+      // 检测采样点是否形成规则形状 (如矩形边界)
+      let isSpecialRegion = false;
+      let specialRegionColor = null;
+      
+      // 检测是否是有框的UI元素 - 通过颜色特征判断
+      if (colorEntries.length >= 2) {
+        const firstColor = colorEntries[0];
+        const secondColor = colorEntries[1];
+        
+        // 计算两种颜色的差异
+        const colorDiff = Math.sqrt(
+          Math.pow(firstColor.avgR - secondColor.avgR, 2) +
+          Math.pow(firstColor.avgG - secondColor.avgG, 2) +
+          Math.pow(firstColor.avgB - secondColor.avgB, 2)
+        );
+        
+        // 检测颜色对比度是否明显 - 可能是UI元素
+        if (colorDiff > 30 && firstColor.percentage > 40 && secondColor.percentage > 15) {
+          // 判断哪个颜色更可能是背景色
+          // 一般情况下，面积更大的更可能是背景色
+          isSpecialRegion = true;
+          specialRegionColor = {
+            r: firstColor.avgR,
+            g: firstColor.avgG,
+            b: firstColor.avgB
+          };
+          
+          // 分析是否有矩形边框特征
+          // 这种情况下我们应该保留整个UI元素的风格
+        }
+      }
+      
+      // 6. 智能决定背景色
+      let finalColor;
+      
+      // 6.1 特殊UI元素处理
+      if (isSpecialRegion && specialRegionColor) {
+        // 对于UI元素，尽量保持其原有颜色
+        finalColor = specialRegionColor;
+      } 
+      // 6.2 有明显主色调
+      else if (isStrongDominant) {
+        finalColor = {
+          r: dominantColor.avgR,
+          g: dominantColor.avgG,
+          b: dominantColor.avgB
+        };
+      }
+      // 6.3 没有明显主色调 - 使用智能加权平均
+      else {
+        // 基于位置距离的加权平均
+        const centerX = region.x + region.width/2;
+        const centerY = region.y + region.height/2;
+        let weightSum = 0;
+        let weightedR = 0;
+        let weightedG = 0;
+        let weightedB = 0;
+        
+        colorSamples.forEach(sample => {
+          // 计算到区域中心的距离
+          const distance = Math.sqrt(
+            Math.pow(sample.x - centerX, 2) + 
+            Math.pow(sample.y - centerY, 2)
+          );
+          
+          // 反比距离权重 - 越近权重越大
+          const weight = 1 / (1 + distance * 0.1);
+          weightSum += weight;
+          
+          weightedR += sample.color.r * weight;
+          weightedG += sample.color.g * weight;
+          weightedB += sample.color.b * weight;
+        });
+        
+        // 计算最终加权平均色
+        finalColor = {
+          r: Math.round(weightedR / weightSum),
+          g: Math.round(weightedG / weightSum),
+          b: Math.round(weightedB / weightSum)
+        };
+        
+        // 增加对全局背景的考量，防止背景色异常突兀
+        // 如果是图表或UI，轻微调整颜色使其更接近于原背景
+        const backgroundAdjustFactor = 0.15; // 背景颜色适应因子
+        
+        // 在保持自身特性的同时，轻微靠近全局背景色
+        finalColor.r = Math.round(finalColor.r * (1 - backgroundAdjustFactor) + avgGlobalR * backgroundAdjustFactor);
+        finalColor.g = Math.round(finalColor.g * (1 - backgroundAdjustFactor) + avgGlobalG * backgroundAdjustFactor);
+        finalColor.b = Math.round(finalColor.b * (1 - backgroundAdjustFactor) + avgGlobalB * backgroundAdjustFactor);
+      }
+      
+      // 7. 绘制背景色
+      // 对于图表类元素的优化 - 增加背景透明度
+      const useAlpha = isSpecialRegion;
+      
+      if (useAlpha) {
+        // 对于特殊区域使用半透明背景，保持一些原始细节
+        ctx.fillStyle = `rgba(${finalColor.r}, ${finalColor.g}, ${finalColor.b}, 0.85)`;
+      } else {
+        ctx.fillStyle = `rgb(${finalColor.r}, ${finalColor.g}, ${finalColor.b})`;
+      }
+      
+      // 绘制背景色块
       ctx.fillRect(
         region.x - padding,
         region.y - padding,
         region.width + (padding * 2),
         region.height + (padding * 2)
       );
-
-      // 3. 绘制翻译后的文本，颜色自适应
-      // 计算背景亮度决定文字颜色
-      const luminance = 0.299 * avgColor.r + 0.587 * avgColor.g + 0.114 * avgColor.b;
-      ctx.fillStyle = luminance > 128 ? 'black' : 'white';
+      
+      // 8. 绘制文本
+      // 根据背景亮度自动选择文本颜色
+      const luminance = 0.299 * finalColor.r + 0.587 * finalColor.g + 0.114 * finalColor.b;
+      const textColor = luminance > 128 ? 'black' : 'white';
+      const strokeColor = luminance > 128 ? 'white' : 'black';
+      
+      ctx.fillStyle = textColor;
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 0.6; // 减小描边宽度，使文字更清晰
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       
       // 字体大小优化策略
       // 1. 初始字体大小设置得更大一些，提高默认字体大小
-      let fontSize = Math.max(region.height * 1.2, 18); // 大幅提高基础字体大小，从0.85提高到1.2，最小值从14提高到18
+      let fontSize = Math.max(region.height * 0.9, 20); // 适当减小字体基础大小，更符合图表美观
       let textFits = false;
       
       // 2. 智能字体大小计算 - 根据文本长度调整初始大小
       // 短文本（1-2个字符）可以使用更大的字体
       if (textToRender.length <= 2) {
-        fontSize = Math.max(fontSize, region.height * 1.4); // 短文本字体从0.95提高到1.4倍区域高度
+        fontSize = Math.max(fontSize, region.height * 0.95);
       } else if (textToRender.length <= 4) {
         // 中等长度文本使用略小的字体
-        fontSize = Math.max(fontSize, region.height * 1.2); // 从0.85提高到1.2
+        fontSize = Math.max(fontSize, region.height * 0.85);
       } else {
-        // 长文本使用相对较小的初始字体，但仍保持较大
-        fontSize = Math.max(fontSize, region.height * 1.0); // 从0.7提高到1.0
+        // 长文本使用相对较小的初始字体
+        fontSize = Math.max(fontSize, region.height * 0.75);
       }
       
       // 3. 动态调整字号以适应区域宽度
-      while (!textFits && fontSize > 10) { // 提高最小字体大小阈值
+      while (!textFits && fontSize > 12) {
         // 使用已注册的中文字体 'SimHei'
         ctx.font = `${fontSize}px SimHei`;
         const metrics = ctx.measureText(textToRender);
         
         // 区域宽度调整 - 允许文本有更大的宽度，稍微超出框也可以
-        const widthThreshold = region.width * (textToRender.length <= 2 ? 1.1 : 1.0); // 允许短文本超出框10%
+        const widthThreshold = region.width * (textToRender.length <= 2 ? 1.1 : 1.02);
         
         if (metrics.width < widthThreshold) {
           textFits = true;
         } else {
-          fontSize -= 2; // 更快速调整，从1.5加快到2
+          fontSize -= 2;
         }
       }
       
       const centerX = region.x + region.width / 2;
       const centerY = region.y + region.height / 2;
-
+      
       // 4. 短文本优化 - 使用粗体并增大字体
       if (textToRender.length <= 3 && region.width > 20 && region.height > 20) {
-        fontSize = Math.min(fontSize * 1.3, region.height * 1.3); // 增大短文本字体，从1.2提高到1.3倍
-        ctx.font = `bold ${fontSize}px SimHei`;
+        fontSize = Math.min(fontSize * 1.2, region.height * 1.2);
+        ctx.font = `${fontSize}px SimHei`;
       }
-
+      
       // 检测是否为竖排文本
-      const isVertical = (region.height / region.width > 1.5) ||  // 放宽判断条件，从2.0降低到1.8
-                        (region.height / region.width > 1.0 && textToRender.length > 2) || // 更宽松的判断，从1.3降低到1.2
-                        (region.height > 80 && region.width < 100); // 放宽绝对尺寸判断
-
+      const isVertical = (region.height / region.width > 1.5) ||
+                        (region.height / region.width > 1.0 && textToRender.length > 2) ||
+                        (region.height > 80 && region.width < 100);
+                        
       if (isVertical) {
         // 竖排文本处理
         ctx.textAlign = 'center';
@@ -818,36 +1056,29 @@ async function renderTranslatedText(imagePath, textRegions) {
         // 竖排文本特别优化 - 根据字符数量和区域大小进一步调整
         let charFactor;
         if (chars.length <= 2) {
-          // 单字或双字竖排，使用超大字体
-          charFactor = 2.0;  // 从1.2提高到1.6
+          charFactor = 1.8;
         } else if (chars.length <= 4) {
-          // 短文本竖排，使用大字体
-          charFactor = 1.8;  // 从1.1提高到1.4
+          charFactor = 1.6;
         } else if (chars.length <= 6) {
-          // 中等文本竖排
-          charFactor = 1.4;  // 从1.0提高到1.2
+          charFactor = 1.4;
         } else {
-          // 长文本竖排
-          charFactor = 1.1;  // 新增长文本处理
+          charFactor = 1.2;
         }
         
         // 根据区域高度和宽度进一步调整字体大小
-        // 窄高区域需要较小字体，宽区域可以使用较大字体
-        const areaFactor = Math.min(1.0, region.width / 40); // 区域宽度因子，窄区域会减小字体
-        charFactor = charFactor * (0.8 + areaFactor * 0.4); // 根据区域宽度调整，但不会低于80%
+        const areaFactor = Math.min(1.0, region.width / 40);
+        charFactor = charFactor * (0.8 + areaFactor * 0.4);
         
-        // 计算最终字体大小，大幅提高基础系数
+        // 计算最终字体大小
         const charHeight = Math.min(
-          fontSize * 1.6,  // 从1.2提高到1.4
+          fontSize * 1.5,
           (region.height / chars.length) * charFactor
         );
         
-        // 为竖排文本设置粗体，增强可读性
-        ctx.font = `bold ${charHeight}px SimHei`;
+        ctx.font = `${charHeight}px SimHei`;
         
         // 计算起始位置，确保文本居中
-        // 减少字符间距，使文本更紧凑
-        const charSpacing = chars.length <= 3 ? 0.9 : 0.95; // 短文本间距更紧凑
+        const charSpacing = chars.length <= 3 ? 0.85 : 0.9;
         const totalTextHeight = chars.length * charHeight * charSpacing;
         const startY = centerY - totalTextHeight / 2 + charHeight / 2;
         
@@ -855,32 +1086,14 @@ async function renderTranslatedText(imagePath, textRegions) {
         chars.forEach((char, index) => {
           const y = startY + index * charHeight * charSpacing;
           
-          // 增强描边效果
-          ctx.lineWidth = Math.max(3, Math.floor(charHeight / 6)); // 从/8提高到/7
-          
-          // 对所有背景应用描边
-          ctx.strokeStyle = luminance > 128 ? 'rgba(255, 255, 255, 0)' : 'rgb(255, 255, 255)'; // 增强描边不透明度到0.6
+          // 绘制文字描边，增强可读性
           ctx.strokeText(char, centerX, y);
-          
           // 绘制文字主体
           ctx.fillText(char, centerX, y);
         });
       } else {
-        // 水平文本处理 - 增强版
-        // 6. 增强水平文本的描边效果
-        ctx.lineWidth = Math.max(3, Math.floor(fontSize / 10)); // 增加描边宽度，从2提高到3
-        
-        // 对所有文字应用描边，但根据亮度调整描边颜色和强度
-        if (luminance < 220) { // 几乎所有背景都应用描边
-          ctx.strokeStyle = luminance > 128 ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)'; // 增强描边不透明度
-          ctx.strokeText(textToRender, centerX, centerY);
-        } else {
-          // 即使是浅色背景，也添加描边增强清晰度
-          ctx.strokeStyle = 'rgba(0,0,0,0.2)'; // 从0.15提高到0.2
-          ctx.strokeText(textToRender, centerX, centerY);
-        }
-        
-        // 然后绘制文字
+        // 水平文本处理 - 添加描边
+        ctx.strokeText(textToRender, centerX, centerY);
         ctx.fillText(textToRender, centerX, centerY);
       }
       
@@ -929,37 +1142,8 @@ async function preprocessImage(imagePath) {
     const baseName = path.basename(imagePath, fileExt);
     const dirName = path.dirname(imagePath);
     
-    // 判断图像主色调
-    let isDarkBackground = false;
-    let isFlowChart = false;
-    let darkPixelCount = 0;
-    let totalPixels = image.bitmap.width * image.bitmap.height;
-    
-    // 采样判断图像类型
-    for (let x = 0; x < image.bitmap.width; x += 5) {
-      for (let y = 0; y < image.bitmap.height; y += 5) {
-        const pixel = Jimp.intToRGBA(image.getPixelColor(x, y));
-        const brightness = (pixel.r + pixel.g + pixel.b) / 3;
-        if (brightness < 100) darkPixelCount++;
-        
-        // 检测是否是流程图（检测白色线条和黑色背景的组合）
-        if (brightness < 30 && // 很黑的背景
-            (x > 0 && y > 0 && x < image.bitmap.width - 1 && y < image.bitmap.height - 1)) {
-          // 检查附近是否有亮点（线条）
-          const neighborPixel = Jimp.intToRGBA(image.getPixelColor(x+1, y));
-          const neighborBrightness = (neighborPixel.r + neighborPixel.g + neighborPixel.b) / 3;
-          if (neighborBrightness > 200) {
-            isFlowChart = true;
-          }
-        }
-      }
-    }
-    
-    // 如果黑色像素占比超过70%，认为是深色背景
-    isDarkBackground = (darkPixelCount / (totalPixels / 25)) > 0.7;
-    
-    // 创建多种增强版本以提高OCR成功率
-    // 1. 基础增强版本 - 提高对比度和亮度
+    // 创建基本增强版本
+    // 基础增强版本 - 仅适度提高对比度和亮度
     const enhanced = image.clone()
       .contrast(0.1)       // 适度增加对比度
       .brightness(0.05);   // 稍微提高亮度
@@ -968,63 +1152,12 @@ async function preprocessImage(imagePath) {
     const enhancedPath = path.join(dirName, `${baseName}${fileExt}-enhanced.jpg`);
     await enhanced.writeAsync(enhancedPath);
     
-    // 2. 创建灰度版本 - 对文字识别更有效
-    const gray = image.clone()
-      .greyscale();
-    
-    // 保存灰度版本
-    const grayPath = path.join(dirName, `${baseName}${fileExt}-gray.jpg`);
-    await gray.writeAsync(grayPath);
-    
-    // 3. 针对深色背景的特殊处理
-    let darkModeEnhancedPath = '';
-    if (isDarkBackground || isFlowChart) {
-      const darkModeEnhanced = image.clone();
-      
-      // 应用锐化和增强对比度，提高深色背景上的文字可读性
-      darkModeEnhanced
-        .contrast(0.3)
-        .brightness(0.15)
-        .convolute([
-          [-1, -1, -1],
-          [-1,  9, -1],
-          [-1, -1, -1]
-        ]);
-      
-      // 对于流程图，可以考虑不使用反转，以避免破坏原始设计
-      if (!isFlowChart) {
-        // 如果检测为深色背景但不是流程图，尝试反转颜色
-        darkModeEnhanced.invert();
-      }
-      
-      darkModeEnhancedPath = path.join(dirName, `${baseName}${fileExt}-dark-enhanced.jpg`);
-      await darkModeEnhanced.writeAsync(darkModeEnhancedPath);
-    }
-    
-    // 基于图片特性选择最合适的预处理版本
-    let type = 'enhanced';
-    let bestPath = enhancedPath;
-    
-    if (isDarkBackground && !isFlowChart) {
-      type = 'dark-enhanced';
-      bestPath = darkModeEnhancedPath;
-    } else if (isFlowChart) {
-      // 流程图类型优先使用基础增强版本，避免使用灰度处理
-      type = 'enhanced';
-      bestPath = enhancedPath;
-    }
-    
     // 返回处理结果
     return {
       original: imagePath,
       enhanced: enhancedPath,
-      gray: grayPath,
-      darkEnhanced: darkModeEnhancedPath,
-      // 返回推荐使用的版本
-      best: bestPath,
-      type: type,
-      isDarkBackground,
-      isFlowChart
+      best: enhancedPath,
+      type: 'enhanced'
     };
   } catch (error) {
     console.error('图像预处理失败:', error);
@@ -1060,382 +1193,163 @@ async function getBaiduAccessToken(apiKey, secretKey) {
   }
 }
 
-// 图片上传和处理接口
-app.post('/translate', upload.single('image'), async (req, res) => {
-  // 处理整体超时的计时器
-  const requestTimeout = setTimeout(() => {
-    res.status(504).json({ 
-      error: '请求超时，请使用更小的图片或检查网络连接',
-      message: '请求超时，请使用更小的图片或检查网络连接' 
+// 新增：批量翻译所有文本区域的函数
+async function translateAllAtOnce(regions, targetLang = 'zh') {
+  if (!regions || regions.length === 0) {
+    return [];
+  }
+
+  const client = getDeepseekClient();
+  if (!client) {
+    console.log('未配置Deepseek API，跳过翻译');
+    // 返回原文作为翻译结果
+    return regions.map(r => ({ ...r, translated: r.text, translateSource: 'original' }));
+  }
+
+  console.log(`准备批量翻译 ${regions.length} 个文本区域...`);
+
+  // 1. 创建一个包含所有待翻译文本的数组，并附带唯一ID
+  const textsToTranslate = regions.map((region, index) => ({
+    id: index,
+    text: region.text
+  }));
+
+  // 2. 构建一个专门用于批量翻译的提示
+  const prompt = `Translate the 'text' field for each object in the following JSON array into ${targetLang}. Return the result as a valid JSON array with the same structure, containing only the translated text. Do not include any explanations, notes, or introductory text.
+
+Input:
+${JSON.stringify(textsToTranslate, null, 2)}
+
+Output:`;
+
+  try {
+    // 3. 调用Deepseek API进行批量翻译
+    const response = await client.translate(prompt);
+
+    // 4. 解析返回的JSON结果
+    // 尝试从返回的文本中提取有效的JSON部分
+    const jsonMatch = response.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      throw new Error('Deepseek API未返回有效的JSON数组');
+    }
+
+    const translatedTexts = JSON.parse(jsonMatch[0]);
+
+    if (!Array.isArray(translatedTexts) || translatedTexts.length !== regions.length) {
+      throw new Error('翻译返回的JSON格式不匹配');
+    }
+
+    // 创建一个从ID到翻译文本的映射
+    const translationMap = new Map();
+    translatedTexts.forEach(item => {
+      translationMap.set(item.id, item.text);
     });
-  }, 45000); // 45秒超时
-  
+
+    // 5. 将翻译结果映射回原始的文本区域
+    const translatedRegions = regions.map((region, index) => {
+      const translatedText = translationMap.get(index);
+      return {
+        ...region,
+        translated: translatedText || region.text, // 如果某个翻译失败，则保留原文
+        translateSource: 'deepseek_batch'
+      };
+    });
+
+    console.log('批量翻译成功完成');
+    return translatedRegions;
+
+  } catch (error) {
+    console.error('批量翻译失败:', error);
+    // 失败时返回原文
+    return regions.map(r => ({ ...r, translated: r.text, translateSource: 'original_batch_error' }));
+  }
+}
+
+// 图片翻译路由
+app.post('/api/translate', upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
-      clearTimeout(requestTimeout);
-      return res.status(400).json({ message: '请上传图片文件' });
+      return res.status(400).json({ error: '请上传图片文件' });
     }
 
-    const { sourceLanguage, targetLanguage, force, ocrApiVersion } = req.body;
     const imagePath = req.file.path;
+    const targetLang = req.body.targetLang || 'zh';
     
-    console.log(`开始处理图片: ${path.basename(imagePath)}`);
-    console.log(`源语言: ${sourceLanguage || 'auto'}, 目标语言: ${targetLanguage || 'chi_sim'}, OCR版本: ${ocrApiVersion || 'default'}`);
-    
-    // 检查缓存 - 使用文件哈希作为键
-    const fileHash = `${path.basename(imagePath)}_${sourceLanguage || 'auto'}_${targetLanguage || 'chi_sim'}_${ocrApiVersion || 'accurate_basic'}`;
-    const cacheFile = path.join(resultsDir, `cache_${fileHash}.json`);
-    
-    if (force !== 'true' && fs.existsSync(cacheFile)) {
-      try {
-        console.log('发现缓存结果，直接返回');
-        const cacheData = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
-        clearTimeout(requestTimeout);
-        res.json({
-          translatedImagePath: cacheData.translatedImage.replace('/api/images/', ''),
-          textRegions: cacheData.textRegions,
-          processingTime: 0.1,
-          fromCache: true,
-          processedCount: cacheData.processedCount || cacheData.textRegions.length,
-          skippedCount: cacheData.skippedCount || 0,
-          totalRegions: cacheData.totalRegions || cacheData.textRegions.length,
-          ocrEngine: 'baidu'
-        });
-        return;
-      } catch (e) {
-        console.error('读取缓存失败:', e);
-        // 继续正常处理
-      }
-    }
-    
-    // 预处理图像，提高OCR效率
-    console.log('开始图像预处理...');
-    let preprocessResult;
-    try {
-      preprocessResult = await preprocessImage(imagePath);
-      console.log(`图像预处理完成，类型: ${preprocessResult.type}`);
-    } catch (error) {
-      console.error('图像预处理失败，使用原始图像:', error);
-      preprocessResult = { 
-        original: imagePath, 
-        best: imagePath,
-        type: 'unknown' 
-      };
-    }
-
-    // 1. OCR识别图片中的文字
-    // 使用预处理后推荐的最佳图像版本，而不是固定使用某一版本
-    const ocrSourceImage = preprocessResult.best || preprocessResult.original;
-    console.log(`使用优化图像进行OCR: ${path.basename(ocrSourceImage)}, 类型: ${preprocessResult.type}`);
-    
+    // 1. 首先使用OCR识别文字
     let textRegions = [];
-    let ocrEngine = 'baidu';
-
-    try {
-      // 尝试使用百度OCR
-      console.log('使用百度OCR进行文字识别...');
-      const ocrResult = await recognizeTextByBaidu(ocrSourceImage, {
-        languageType: sourceLanguage,
-        ocrApiVersion: ocrApiVersion || 'accurate_basic'
-      });
-
-      if (!ocrResult.success) {
-        // 如果百度OCR失败，尝试使用PaddleOCR作为备选
-        console.log('百度OCR失败，尝试使用PaddleOCR...');
-        const paddleResult = await recognizeTextByPaddle(ocrSourceImage, sourceLanguage);
-        if (paddleResult.success) {
-          textRegions = paddleResult.textRegions;
-          ocrEngine = 'paddle';
-          console.log(`PaddleOCR成功识别到 ${textRegions.length} 个文本区域`);
-        } else {
-          throw new Error(paddleResult.message || ocrResult.message || 'OCR识别失败');
-        }
-      } else {
+    let ocrResult;
+    
+    if (baiduOcrClient) {
+      console.log('使用百度OCR识别文字...');
+      ocrResult = await recognizeTextByBaidu(imagePath);
+      if (ocrResult && ocrResult.success && Array.isArray(ocrResult.textRegions)) {
         textRegions = ocrResult.textRegions;
-        console.log(`百度OCR成功识别到 ${textRegions.length} 个文本区域`);
       }
+    } else {
+      console.log('使用PaddleOCR识别文字...');
+      ocrResult = await recognizeTextByPaddle(imagePath);
+      if (ocrResult && ocrResult.success && Array.isArray(ocrResult.textRegions)) {
+        textRegions = ocrResult.textRegions;
+      }
+    }
 
-    } catch (ocrError) {
-      // 最终尝试使用PaddleOCR
-      try {
-        console.log('尝试使用PaddleOCR作为最后备选...');
-        const paddleResult = await recognizeTextByPaddle(ocrSourceImage, sourceLanguage);
-        if (paddleResult.success && paddleResult.textRegions.length > 0) {
-          textRegions = paddleResult.textRegions;
-          ocrEngine = 'paddle';
-          console.log(`PaddleOCR成功识别到 ${textRegions.length} 个文本区域`);
-        } else {
-          throw new Error('所有OCR引擎都无法识别文本');
-        }
-      } catch (paddleError) {
-        console.error('所有OCR识别尝试均失败:', paddleError.message);
-        clearTimeout(requestTimeout);
-        return res.status(422).json({
-          message: '无法从图片中识别文字，请尝试更清晰的图片。',
-          error: ocrError.message
-        });
-      }
+    if (!textRegions || textRegions.length === 0) {
+      return res.status(422).json({ error: '未能识别出任何文字' });
     }
-    
-    if (textRegions.length === 0) {
-      console.log('未检测到有效文本区域');
-      const outputFileName = `${imagePath}-processed.jpg`;
-      
-      try {
-        const img = await Jimp.read(preprocessResult.original);
-        const font = await Jimp.loadFont(Jimp.FONT_SANS_16_BLACK);
-        img.print(font, 10, 10, '未检测到可翻译文本 / No text detected');
-        await img.writeAsync(outputFileName);
-        
-        clearTimeout(requestTimeout);
-        res.json({
-          translatedImagePath: `/results/${path.basename(outputFileName)}`,
-          textRegions: [],
-          processingTime: 0.5,
-          message: '未检测到可翻译文本'
-        });
-        return;
-      } catch (error) {
-        console.error('创建无文本结果图像失败:', error);
-        fs.copyFileSync(preprocessResult.original, outputFileName);
-        
-        clearTimeout(requestTimeout);
-        res.json({
-          translatedImagePath: `/results/${path.basename(outputFileName)}`,
-          textRegions: [],
-          processingTime: 0.5,
-          message: '未检测到可翻译文本'
-        });
-        return;
-      }
-    }
-    
-    // 2. 翻译识别出的文字
-    console.log('开始翻译...');
-    const translatePromises = textRegions.map(async region => {
-      try {
-        const translateResult = await betterTranslate(region.text, targetLanguage || 'zh-CN');
-        region.translated = translateResult.text;
-        region.translateSource = translateResult.source;
-        return region;
-      } catch (error) {
-        console.error(`翻译文本"${region.text}"失败:`, error);
-        region.translated = region.text; // 翻译失败时使用原文
-        region.translateSource = 'error';
-        return region;
-      }
-    });
-    
-    let translatedRegions;
-    try {
-      translatedRegions = await Promise.all(translatePromises);
-    } catch (error) {
-      console.error('批量翻译过程中出错:', error);
-      translatedRegions = textRegions;
-    }
-    
-    // 统计翻译来源
-    const translationSourceStats = {
-      baidu_api: 0,
-      baidu_api_mixed: 0, // 添加混合语言处理统计
-      google_api: 0,
-      cache: 0,
-      original: 0, 
-      error: 0,
-      empty: 0,
-      no_api: 0
-    };
-    
-    translatedRegions.forEach(region => {
-      if (region.translateSource) {
-        translationSourceStats[region.translateSource] = 
-          (translationSourceStats[region.translateSource] || 0) + 1;
-      }
-    });
-    
-    console.log('翻译来源统计:', translationSourceStats);
-    console.log('OCR引擎:', ocrEngine);
 
-    // 3. 将翻译后的文字渲染到处理后的图片上
-    console.log('开始渲染翻译结果到图片...');
-    const startTime = Date.now();
-    let renderResult;
+    // 2. 将所有识别出的文本一次性打包发送给Deepseek翻译
+    const translatedRegions = await translateAllAtOnce(textRegions, targetLang);
+
+    // 3. 渲染翻译结果到图片上
+    const renderResult = await renderTranslatedText(imagePath, translatedRegions);
     
-    try {
-      renderResult = await renderTranslatedText(preprocessResult.original, translatedRegions);
-      const processingTime = (Date.now() - startTime) / 1000;
-      console.log(`渲染完成: ${path.basename(renderResult.outputPath)}`);
-      
-      const formattedPath = '/results/' + path.basename(renderResult.outputPath);
-      console.log('翻译图片相对路径:', formattedPath);
-      
-      const responseData = {
-        translatedImagePath: formattedPath,
-        textRegions: translatedRegions,
-        processingTime: processingTime,
-        processedCount: renderResult.processedCount,
-        skippedCount: renderResult.skippedCount,
-        totalRegions: translatedRegions.length,
-        translationSourceStats: translationSourceStats,
-        ocrEngine: ocrEngine
-      };
-      
-      // 缓存结果
-      try {
-        fs.writeFileSync(cacheFile, JSON.stringify({
-          translatedImage: formattedPath,
-          textRegions: translatedRegions,
-          processedCount: renderResult.processedCount,
-          skippedCount: renderResult.skippedCount,
-          totalRegions: translatedRegions.length,
-          translationSourceStats: translationSourceStats,
-          ocrEngine: ocrEngine
-        }));
-        console.log('结果已缓存');
-      } catch (e) {
-        console.error('缓存结果失败:', e);
-      }
-      
-      clearTimeout(requestTimeout);
-      res.json(responseData);
-    } catch (error) {
-      console.error('渲染翻译文本失败:', error);
-      const fallbackPath = `${imagePath}-processed.jpg`;
-      fs.copyFileSync(preprocessResult.original, fallbackPath);
-      
-      clearTimeout(requestTimeout);
-      res.json({
-        translatedImagePath: fallbackPath.replace(path.join(__dirname, ''), '').replace(/\\/g, '/'),
-        textRegions: translatedRegions,
-        processingTime: (Date.now() - startTime) / 1000,
-        error: '渲染文本失败，返回原图',
-        message: '渲染文本失败，返回预处理后的图像'
-      });
+    if (!renderResult || !renderResult.success) {
+      throw new Error('渲染翻译结果失败');
     }
     
-    // 清理临时文件
-    try {
-      const filesToClean = [];
-      
-      // 添加需要清理的预处理文件
-      if (preprocessResult.enhanced && preprocessResult.enhanced !== imagePath) 
-        filesToClean.push(preprocessResult.enhanced);
-        
-      if (preprocessResult.gray && preprocessResult.gray !== imagePath) 
-        filesToClean.push(preprocessResult.gray);
-        
-      if (preprocessResult.darkEnhanced && preprocessResult.darkEnhanced !== imagePath) 
-        filesToClean.push(preprocessResult.darkEnhanced);
-      
-      filesToClean.forEach(file => {
-        if (fs.existsSync(file)) {
-          try {
-            fs.unlinkSync(file);
-            console.log(`已清理临时文件: ${file}`);
-          } catch (e) {
-            console.warn(`清理临时文件失败: ${file}`, e);
-          }
-        }
-      });
-    } catch (error) {
-      console.warn('清理临时文件失败:', error);
-    }
+    const resultPath = renderResult.outputPath;
+    const relativePath = '/results/' + path.basename(resultPath);
+
+    // 4. 返回结果
+    res.json({
+      success: true,
+      textRegions: translatedRegions,
+      resultImage: relativePath,
+      originalImage: '/uploads/' + path.basename(imagePath)
+    });
+
   } catch (error) {
-    console.error('处理过程中出错:', error);
-    clearTimeout(requestTimeout);
-    res.status(500).json({ 
-      message: '图片处理失败', 
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
+    console.error('处理请求时发生错误:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// API配置接口
-app.post('/api/configure', async (req, res) => {
+// API配置信息接口 - 用于获取API状态
+app.get('/api/status', async (req, res) => {
   try {
-    // 接收配置信息
-    const config = req.body;
-    console.log('接收到API配置:', config);
-    
-    // OCR配置
-    if (config.baiduOcr) {
-      const { appId, apiKey, secretKey } = config.baiduOcr;
-      
-      // 验证API密钥是否有效
-      console.log('正在验证OCR API密钥...');
-      const accessToken = await getBaiduAccessToken(apiKey, secretKey);
-      
-      if (!accessToken) {
-        console.error('OCR API密钥验证失败');
-        return res.status(400).json({ 
-          success: false, 
-          message: 'OCR API密钥验证失败，请检查密钥是否正确' 
-        });
+    // 返回API配置状态，但不暴露具体密钥
+    const apiStatus = {
+      baiduOcr: {
+        configured: !!(process.env.BAIDU_APP_ID && process.env.BAIDU_API_KEY && process.env.BAIDU_SECRET_KEY),
+        client: !!baiduOcrClient
+      },
+      deepseek: {
+        configured: !!process.env.DEEPSEEK_API_KEY,
+        client: !!deepseekClient
       }
-      
-      // 存储配置
-      process.env.BAIDU_APP_ID = appId;
-      process.env.BAIDU_API_KEY = apiKey;
-      process.env.BAIDU_SECRET_KEY = secretKey;
-      process.env.BAIDU_ACCESS_TOKEN = accessToken;
-      
-      // 动态更新正在使用的客户端实例，使其立即生效
-      baiduOcrClient = new AipOcrClient(appId, apiKey, secretKey);
-      baiduNlpClient = new AipNlpClient(appId, apiKey, secretKey);
-      
-      // 添加临时凭证
-      tempCredentials.baiduOcr = { appId, apiKey, secretKey };
-      
-      console.log('百度OCR客户端已动态更新。');
-
-      // 写入配置到.env文件
-      let envContent = '';
-      envContent += `BAIDU_APP_ID=${appId}\n`;
-      envContent += `BAIDU_API_KEY=${apiKey}\n`;
-      envContent += `BAIDU_SECRET_KEY=${secretKey}\n`;
-      
-      // 确保.env文件存在
-      try {
-        const currentEnv = fs.existsSync('.env') ? fs.readFileSync('.env', 'utf8') : '';
-        envContent = currentEnv.replace(/BAIDU_APP_ID=.*\n|BAIDU_API_KEY=.*\n|BAIDU_SECRET_KEY=.*\n/g, '') + envContent;
-        fs.writeFileSync('.env', envContent);
-      } catch (err) {
-        console.error('保存.env文件失败:', err);
-      }
-    }
+    };
     
-    // 翻译配置
-    if (config.baiduTranslate) {
-      const { appId, key } = config.baiduTranslate;
-      
-      // 存储配置
-      process.env.BAIDU_TRANSLATE_APP_ID = appId;
-      process.env.BAIDU_TRANSLATE_KEY = key;
-      
-      // 动态更新翻译凭证
-      tempCredentials.baiduTranslate = { appId, key };
-      console.log('百度翻译凭证已动态更新。');
-
-      // 写入配置到.env文件
-      let envContent = '';
-      envContent += `BAIDU_TRANSLATE_APP_ID=${appId}\n`;
-      envContent += `BAIDU_TRANSLATE_KEY=${key}\n`;
-      
-      // 确保.env文件存在
-      try {
-        const currentEnv = fs.existsSync('.env') ? fs.readFileSync('.env', 'utf8') : '';
-        envContent = currentEnv.replace(/BAIDU_TRANSLATE_APP_ID=.*\n|BAIDU_TRANSLATE_KEY=.*\n/g, '') + envContent;
-        fs.writeFileSync('.env', envContent);
-      } catch (err) {
-        console.error('保存.env文件失败:', err);
-      }
-    }
-    
-    res.json({ success: true, message: 'API配置成功保存' });
+    res.json({ 
+      success: true, 
+      status: apiStatus,
+      message: '请在.env文件中配置API密钥'
+    });
   } catch (error) {
-    console.error('API配置失败:', error);
-    res.status(500).json({ success: false, message: error.message });
+    console.error('获取API状态失败:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: '获取API状态失败: ' + error.message 
+    });
   }
 });
 
@@ -1448,5 +1362,5 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 app.listen(PORT, () => {
-  console.log(`服务器已启动，端口号: ${PORT}`);
+  console.log(`服务器已启动，端口号: ${PORT}`); 
 }); 

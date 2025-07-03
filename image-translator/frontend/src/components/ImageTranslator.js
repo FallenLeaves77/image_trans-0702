@@ -1,10 +1,8 @@
 import React, { useState, useCallback } from 'react';
-import { Upload, Button, Select, Row, Col, Card, Spin, message, Progress, Modal, Tooltip } from 'antd';
-import { InboxOutlined, DownloadOutlined, SwapOutlined, GlobalOutlined, ThunderboltOutlined, SettingOutlined, CloudOutlined, QuestionCircleOutlined, EyeOutlined, DeleteOutlined } from '@ant-design/icons';
+import { Upload, Button, Select, Row, Col, Card, Spin, message, Progress, Modal, Tooltip, Alert } from 'antd';
+import { InboxOutlined, DownloadOutlined, SwapOutlined, GlobalOutlined, ThunderboltOutlined, EyeOutlined, DeleteOutlined, PaperClipOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import './ImageTranslator.css';
-import ApiConfig from './ApiConfig'; // 导入API配置组件
-import ApiInstructions from './ApiInstructions'; // 导入API使用说明组件
 
 const { Dragger } = Upload;
 const { Option } = Select;
@@ -36,11 +34,6 @@ const ocrEngines = {
     name: 'PaddleOCR',
     icon: '🐼',
     description: '百度飞桨开源OCR引擎'
-  },
-  tesseract: {
-    name: 'Tesseract OCR',
-    icon: '📝',
-    description: '本地OCR识别引擎'
   }
 };
 
@@ -50,12 +43,35 @@ const translationCache = new Map();
 // 取消标记
 let cancelRequested = false;
 
+// 翻译来源图标和名称映射
+const translateSources = {
+  deepseek: {
+    name: 'Deepseek大模型',
+    icon: '🧠',
+    description: '高质量AI翻译'
+  },
+  cache: {
+    name: '翻译缓存',
+    icon: '⚡',
+    description: '本地缓存结果'
+  },
+  original: {
+    name: '保留原文',
+    icon: '📝',
+    description: '无法翻译时保留原文'
+  }
+};
+
+// 添加视觉模型控制选项
+const useDeepseekVisionDefault = true; // 默认启用视觉模型
+
 const ImageTranslator = () => {
   const [fileList, setFileList] = useState([]);
   const [sourceLanguage, setSourceLanguage] = useState('auto');
   const [targetLanguage, setTargetLanguage] = useState('chi_sim');
   const [ocrApiVersion, setOcrApiVersion] = useState('accurate');
   const [loading, setLoading] = useState(false);
+  const [useDeepseekVision, setUseDeepseekVision] = useState(useDeepseekVisionDefault); // 添加视觉模型状态
 
   // Active states for the currently selected image
   const [activeFileUid, setActiveFileUid] = useState(null);
@@ -74,11 +90,6 @@ const ImageTranslator = () => {
   const [previewVisible, setPreviewVisible] = useState(false);
   const [previewImage, setPreviewImage] = useState('');
   
-  // 添加API配置状态
-  const [apiConfigVisible, setApiConfigVisible] = useState(false);
-  // 添加API使用说明状态
-  const [apiInstructionsVisible, setApiInstructionsVisible] = useState(false);
-  
   // 重置取消标记
   const resetCancel = useCallback(() => {
     cancelRequested = false;
@@ -90,6 +101,13 @@ const ImageTranslator = () => {
     message.info('正在取消操作...');
     setProgressText('取消中...');
   }, []);
+
+  // 取消翻译处理
+  const handleCancel = useCallback(() => {
+    if (loading) {
+      requestCancel();
+    }
+  }, [loading, requestCancel]);
 
   // 图像预处理 - 客户端压缩图片
   const preprocessImage = useCallback((file) => {
@@ -303,21 +321,19 @@ const ImageTranslator = () => {
     }
     
     setLoading(true);
-    setProgress(30);
-    setProgressText('正在上传图片...');
-    resetCancel();
-    
-    // 记录开始时间
-    const startTime = Date.now();
+    setProgress(25);
     
     try {
+      const processedFile = await preprocessImage(currentFile.originFileObj);
+      
+      setProgressText('上传并处理中...');
+      
       const formData = new FormData();
-      formData.append('image', currentFile.originFileObj);
-      formData.append('sourceLanguage', sourceLanguage);
-      formData.append('targetLanguage', targetLanguage);
+      formData.append('image', processedFile);
+      formData.append('targetLang', targetLanguage);
+      formData.append('useDeepseek', useDeepseekVision.toString());
       formData.append('ocrApiVersion', ocrApiVersion);
-      formData.append('force', 'true'); // 添加强制刷新参数
-
+      
       const controller = new AbortController();
       const cancelCheckInterval = setInterval(() => {
         if (cancelRequested) {
@@ -326,7 +342,9 @@ const ImageTranslator = () => {
         }
       }, 500);
 
-      const response = await axios.post(`${BACKEND_URL}/translate`, formData, {
+      const startTime = Date.now();
+      
+      const response = await axios.post(`${BACKEND_URL}/api/translate`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
@@ -336,23 +354,22 @@ const ImageTranslator = () => {
             throw new axios.Cancel('Upload canceled by user.');
           }
           const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-          setProgress(30 + percent * 0.6);
-          setProgressText(`图片上传中: ${percent}%`);
+          setProgress(25 + percent * 0.6);
+          setProgressText(`上传中: ${percent}%`);
         },
       });
 
       clearInterval(cancelCheckInterval);
 
-      if (response.data && response.data.translatedImagePath) {
-        const translatedImagePath = `${BACKEND_URL}${response.data.translatedImagePath}`;
+      if (response.data && response.data.success) {
+        const translatedImagePath = `${BACKEND_URL}${response.data.resultImage}`;
         const processTime = (Date.now() - startTime) / 1000;
         const stats = {
-          processedCount: response.data.processedCount,
-          skippedCount: response.data.skippedCount,
-          totalRegions: response.data.totalRegions,
+          processedCount: response.data.textRegions.length,
+          skippedCount: 0,
+          totalRegions: response.data.textRegions.length,
           fromCache: false,
-          ocrEngine: response.data.ocrEngine,
-          translationSourceStats: response.data.translationSourceStats
+          ocrEngine: 'auto'
         };
 
         setActiveTranslatedImage(translatedImagePath);
@@ -396,73 +413,136 @@ const ImageTranslator = () => {
         setProgressText('');
       }, 2000);
     }
-  }, [fileList, activeFileUid, sourceLanguage, targetLanguage, ocrApiVersion, resetCancel]);
+  }, [fileList, activeFileUid, sourceLanguage, targetLanguage, ocrApiVersion, useDeepseekVision, resetCancel]);
+
+  // Render API warning if translation results show API issues
+  const renderApiWarning = () => {
+    if (activeTextRegions.length === 0 || !activeTranslationStats) {
+      return null;
+    }
+
+    // 如果使用了本地OCR (paddle)，提示设置百度OCR可能效果更好
+    if (translationResults[activeFileUid]?.ocrEngine === 'paddle') {
+      return (
+        <Alert
+          message="提示：使用了本地OCR引擎"
+          description="检测到使用的是本地OCR引擎。请在服务器.env文件中配置百度OCR API以获得更好的识别效果。"
+          type="info"
+          showIcon
+          style={{ marginBottom: 15 }}
+        />
+      );
+    }
+    
+    return null;
+  };
 
   return (
-    <div className="image-translator-container">
-      <Row gutter={[16, 16]}>
-        <Col xs={24} md={8}>
-          <Card title="上传图片" className="control-card" bordered={false}>
+    <div className="translator-container">
+      <Row gutter={16}>
+        <Col xs={24} sm={24} md={8} lg={8} xl={6}>
+          <Card 
+            title={<><GlobalOutlined /> 图片上传</>} 
+            className="translator-card upload-card"
+            extra={
+              <Select
+                defaultValue={ocrApiVersion}
+                style={{ width: 120 }}
+                onChange={setOcrApiVersion}
+              >
+                <Option value="accurate">高精度OCR</Option>
+                <Option value="general">通用OCR</Option>
+              </Select>
+            }
+          >
+            <div className="language-selectors">
+              <Select
+                value={sourceLanguage}
+                onChange={setSourceLanguage}
+              >
+                {languages.map(lang => (
+                  <Option key={lang.code} value={lang.code}>{lang.name}</Option>
+                ))}
+              </Select>
+              <SwapOutlined className="swap-icon" />
+              <Select
+                value={targetLanguage}
+                onChange={setTargetLanguage}
+              >
+                {languages
+                  .filter(lang => lang.code !== 'auto')
+                  .map(lang => (
+                    <Option key={lang.code} value={lang.code}>{lang.name}</Option>
+                  ))}
+              </Select>
+            </div>
+            
             <Dragger
+              className="upload-area"
               fileList={fileList}
               beforeUpload={beforeUpload}
               onChange={handleChange}
               onRemove={handleRemove}
-              onPreview={handleSelectFile}
-              multiple={true}
-              showUploadList={true}
-              accept="image/*"
+              multiple
+              itemRender={(originNode, file, currFileList, actions) => {
+                const isSelected = file.uid === activeFileUid;
+                return (
+                  <div
+                    key={file.uid}
+                    className={`upload-list-item ${isSelected ? 'selected' : ''}`}
+                    onClick={() => handleSelectFile(file)}
+                  >
+                    <div className="file-info">
+                      <PaperClipOutlined />
+                      <span className="file-name" title={file.name}>{file.name}</span>
+                    </div>
+                    <Tooltip title="移除">
+                      <DeleteOutlined
+                        className="remove-icon"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          actions.remove();
+                        }}
+                      />
+                    </Tooltip>
+                  </div>
+                );
+              }}
             >
               <p className="ant-upload-drag-icon">
                 <InboxOutlined />
               </p>
               <p className="ant-upload-text">点击或拖拽图片到此区域</p>
-              <p className="ant-upload-hint">支持PNG, JPG, WEBP等格式，图片大小不超过10MB</p>
+              <p className="ant-upload-hint">
+                支持多个图片批量上传和翻译
+              </p>
             </Dragger>
 
-            <div className="language-selector">
-              <Select value={sourceLanguage} onChange={setSourceLanguage} style={{ width: '40%' }}>
-                {languages.map(lang => (
-                  <Option key={lang.code} value={lang.code}>{lang.name}</Option>
-                ))}
-              </Select>
-              <SwapOutlined style={{ margin: '0 8px' }} />
-              <Select value={targetLanguage} onChange={setTargetLanguage} style={{ width: '40%' }}>
-                {languages.filter(l => l.code !== 'auto').map(lang => (
-                  <Option key={lang.code} value={lang.code}>{lang.name}</Option>
-                ))}
-              </Select>
+            <div className="action-buttons">
+              <Button 
+                type="primary" 
+                onClick={handleTranslate} 
+                disabled={fileList.length === 0 || loading}
+                style={{ marginRight: 8 }}
+                loading={loading}
+              >
+                {loading ? '翻译中...' : '开始翻译'}
+              </Button>
+              <Button 
+                onClick={handleCancel} 
+                disabled={!loading}
+              >
+                取消
+              </Button>
             </div>
-
-            <div className="ocr-version-selector" style={{ marginTop: 16 }}>
-              <Tooltip title="选择不同的OCR识别引擎版本。含位置版能实现覆盖式翻译。">
-                <Select value={ocrApiVersion} onChange={setOcrApiVersion} style={{ width: '100%' }}>
-                  <Option value="accurate">通用文字识别-高精度含位置版</Option>
-                  <Option value="general">通用文字识别-标准含位置版</Option>
-                </Select>
-              </Tooltip>
-            </div>
-
-            <div style={{ marginTop: 16 }}>
-              <div className="main-actions">
-                <Button
-                  type="primary"
-                  icon={<ThunderboltOutlined />}
-                  loading={loading}
-                  onClick={handleTranslate}
-                  disabled={!fileList.length || loading}
-                >
-                  开始翻译
-                </Button>
+            
+            {loading && (
+              <div className="progress-container">
+                <Progress percent={progress} status={cancelRequested ? 'exception' : 'active'} />
+                <div className="progress-text">{progressText}</div>
               </div>
-            </div>
+            )}
           </Card>
-          { (progress > 0 || loading) && 
-            <Card size="small" style={{ marginTop: 10 }}>
-              <Progress percent={Math.round(progress)} size="default" />
-              <p style={{ textAlign: 'center', marginTop: 5 }}>{progressText}</p>
-            </Card>
-          }
         </Col>
         <Col xs={24} md={16}>
           <Row gutter={[16, 16]}>
@@ -502,6 +582,31 @@ const ImageTranslator = () => {
               </Card>
             </Col>
           </Row>
+
+          {/* Show EITHER alerts OR stats, to fill the same space */}
+          {!activeTranslatedImage && activeTextRegions.length === 0 ? (
+            <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+              <Col xs={24} md={12}>
+                <Alert
+                  message="API密钥信息"
+                  description="请在服务器的.env文件中配置API密钥。程序会优先使用百度OCR，如未配置则自动使用本地OCR引擎。"
+                  type="info"
+                  showIcon
+                  className="info-alert"
+                />
+              </Col>
+              <Col xs={24} md={12}>
+                <Alert
+                  message="Deepseek视觉模型已启用"
+                  description="系统默认使用Deepseek视觉模型进行图像识别和翻译，提供更好的图表和复杂图像翻译效果。"
+                  type="success"
+                  showIcon
+                  className="info-alert"
+                />
+              </Col>
+            </Row>
+          ) : null}
+
           {activeTranslatedImage && activeTextRegions.length > 0 && (
             <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
               <Col span={24}>
@@ -518,9 +623,13 @@ const ImageTranslator = () => {
                   { activeTranslationStats.translationSourceStats && 
                     <div className="stats-details">
                       <b>翻译来源:</b>
-                      <ul>
+                      <ul className="translation-sources-list">
                         {Object.entries(activeTranslationStats.translationSourceStats).map(([key, value]) => (
-                          value > 0 && <li key={key}>{key}: {value}</li>
+                          value > 0 && <li key={key}>
+                            {translateSources[key] ? 
+                              <><span className="source-icon">{translateSources[key].icon}</span> {translateSources[key].name}: {value}</> : 
+                              `${key}: ${value}`}
+                          </li>
                         ))}
                       </ul>
                     </div>
@@ -532,17 +641,17 @@ const ImageTranslator = () => {
           )}
         </Col>
       </Row>
-
-      <Modal visible={previewVisible} footer={null} onCancel={handleCancelPreview} width="80%">
-        <img alt="预览" style={{ width: '100%', marginTop: '20px' }} src={previewImage} />
-      </Modal>
-
-      <ApiConfig visible={apiConfigVisible} onClose={() => setApiConfigVisible(false)} />
       
-      <ApiInstructions 
-        visible={apiInstructionsVisible} 
-        onClose={() => setApiInstructionsVisible(false)}
-      />
+      <Modal
+        visible={previewVisible}
+        footer={null}
+        onCancel={handleCancelPreview}
+        width="90vw"
+        bodyStyle={{ padding: '24px', backgroundColor: '#f0f2f5' }}
+        centered
+      >
+        <img alt="预览图" style={{ width: '100%', maxHeight: '80vh', objectFit: 'contain' }} src={previewImage} />
+      </Modal>
     </div>
   );
 };

@@ -5,9 +5,59 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.6;
 }
 
 code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
+  font-size: 15px;
+}
+
+/* 全局增强字体大小和粗细 */
+html {
+  font-size: 16px;
+}
+
+/* 默认字体大小增强 */
+div, p, span, a, label, button, input, select, textarea {
+  font-size: 16px;
+}
+
+/* 增强弹出层字体大小 */
+.ant-modal-content,
+.ant-notification-notice,
+.ant-message-notice-content {
+  font-size: 16px;
+}
+
+/* 覆盖Ant Design默认字体大小 */
+.ant-form-item-label > label {
+  font-size: 16px !important;
+  font-weight: 500 !important;
+}
+
+.ant-form-item-control {
+  font-size: 16px !important;
+}
+
+.ant-dropdown-menu-item,
+.ant-select-dropdown-menu-item {
+  font-size: 16px !important;
+}
+
+.ant-btn {
+  font-size: 16px !important;
+  font-weight: 500 !important;
+}
+
+.ant-message {
+  font-size: 16px !important;
+}
+
+/* 增强表单元素字体大小 */
+input, textarea, select {
+  font-size: 16px !important;
 } 

@@ -1,0 +1,10 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+1.编写代码符合KISS原则、DRY原则、YAGNI原则、SOLID原则、Fail Fast原则。
+
+2.提示词要求只能用中文（简体）呈现出来
+
+3.请不要实时上传GitHub

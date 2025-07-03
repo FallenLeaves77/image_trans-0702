@@ -1,0 +1,24 @@
+# Dependencies
+/node_modules
+/image-translator/node_modules
+/image-translator/frontend/node_modules
+/image-translator/backend/node_modules
+
+# Environment variables
+.env
+*.env
+image-translator/backend/.env
+
+# Uploads and results
+image-translator/backend/uploads/
+image-translator/backend/results/
+
+# Log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS generated files
+.DS_Store
+Thumbs.db 
