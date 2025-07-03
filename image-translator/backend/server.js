@@ -45,34 +45,30 @@ if (!process.env.DEEPSEEK_API_KEY) {
   process.env.DEEPSEEK_API_KEY = 'sk-4d5297ac14d34747bc366cdcab4e00ac';
 }
 
-// 动态查找并注册字体
+// 注册中文字体
+const fontCandidates = ['SimHei.otf', 'simhei.ttf', 'SimSun.ttf', 'msyh.ttf', 'MicrosoftYaHei.ttf', 'SourceHanSansSC-Regular.otf'];
 const fontDir = path.join(__dirname, 'fonts');
 let registeredFontFamily = null;
 
-if (fs.existsSync(fontDir)) {
-  const fontFiles = fs.readdirSync(fontDir);
-  const supportedFonts = fontFiles.filter(f => ['.ttf', '.otf'].includes(path.extname(f).toLowerCase()));
-
-  if (supportedFonts.length > 0) {
-    for (const fontName of supportedFonts) {
-      const fontPath = path.join(fontDir, fontName);
-      if (fs.existsSync(fontPath)) {
+for (const fontName of fontCandidates) {
+    const fontPath = path.join(fontDir, fontName);
+    if (fs.existsSync(fontPath)) {
         try {
-          // 统一注册为 'SimHei' 字体族，方便全局调用
-          registerFont(fontPath, { family: 'SimHei' });
-          console.log(`成功注册字体: ${fontName} (用作 SimHei 字体族)`);
-          registeredFontFamily = 'SimHei';
-          break; // 找到并注册一个后即可
+            // 统一注册为 'SimHei' 字体族，方便全局调用
+            registerFont(fontPath, { family: 'SimHei' });
+            console.log(`成功注册字体: ${fontName} (用作 SimHei 字体族)`);
+            registeredFontFamily = 'SimHei';
+            break; // 找到并注册一个后即可
         } catch(e) {
-          console.error(`注册字体 ${fontName} 失败:`, e);
+            console.error(`注册字体 ${fontName} 失败:`, e);
         }
-      }
     }
-  }
 }
 
 if (!registeredFontFamily) {
-  console.warn(`警告: 在 ${fontDir} 目录下未找到可用字体, 中文渲染可能显示为方块。`);
+  console.warn(`警告: 在 ${fontDir} 目录中未找到任何可用的中文字体。`);
+  console.warn(`请尝试将以下任一推荐字体文件放入该目录: ${fontCandidates.join(', ')}`);
+  console.warn(`中文渲染可能显示为方块。`);
 }
 
 // 设置百度API参数 - 实际应用中应从环境变量或配置文件中读取
