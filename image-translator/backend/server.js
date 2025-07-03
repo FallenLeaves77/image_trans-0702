@@ -46,30 +46,80 @@ if (!process.env.DEEPSEEK_API_KEY) {
 }
 
 // 注册中文字体
-const fontCandidates = ['SimHei.otf', 'simhei.ttf', 'SimSun.ttf', 'msyh.ttf', 'MicrosoftYaHei.ttf', 'SourceHanSansSC-Regular.otf'];
 const fontDir = path.join(__dirname, 'fonts');
-let registeredFontFamily = null;
+const registeredFontFamilies = new Map();
 
-for (const fontName of fontCandidates) {
-    const fontPath = path.join(fontDir, fontName);
-    if (fs.existsSync(fontPath)) {
-        try {
-            // 统一注册为 'SimHei' 字体族，方便全局调用
-            registerFont(fontPath, { family: 'SimHei' });
-            console.log(`成功注册字体: ${fontName} (用作 SimHei 字体族)`);
-            registeredFontFamily = 'SimHei';
-            break; // 找到并注册一个后即可
-        } catch(e) {
-            console.error(`注册字体 ${fontName} 失败:`, e);
+// 定义一个我们需要的字体列表，以及希望它们注册的字体族名称
+const desiredFonts = {
+    'SourceHanSerifSC-Regular.otf': 'Source Han Serif SC',
+    'SimHei.ttf': 'SimHei',
+    'simhei.ttf': 'SimHei', // 兼容不同大小写
+    'msyh.ttf': 'Microsoft YaHei',
+    'SourceHanSansSC-Regular.otf': 'Source Han Sans SC'
+};
+// 用于记录已找到的字体，避免重复搜索
+const foundFonts = new Set();
+
+function findAndRegisterFonts(directory) {
+    if (!fs.existsSync(directory)) {
+        return;
+    }
+    const files = fs.readdirSync(directory);
+    for (const file of files) {
+        // 如果已经找到所有需要的字体，就提前结束，提高效率
+        if (foundFonts.size === Object.keys(desiredFonts).length) {
+            return;
+        }
+
+        const fullPath = path.join(directory, file);
+        if (fs.statSync(fullPath).isDirectory()) {
+            findAndRegisterFonts(fullPath);
+        } else if (desiredFonts[file] && !foundFonts.has(file)) {
+            const familyName = desiredFonts[file];
+            try {
+                registerFont(fullPath, { family: familyName });
+                console.log(`成功注册字体: ${file} (用作 ${familyName} 字体族)`);
+                registeredFontFamilies.set(familyName, familyName);
+                foundFonts.add(file); // 标记为已找到
+            } catch (e) {
+                console.error(`注册字体 ${file} 失败:`, e);
+            }
         }
     }
 }
 
-if (!registeredFontFamily) {
-  console.warn(`警告: 在 ${fontDir} 目录中未找到任何可用的中文字体。`);
-  console.warn(`请尝试将以下任一推荐字体文件放入该目录: ${fontCandidates.join(', ')}`);
-  console.warn(`中文渲染可能显示为方块。`);
+// 开始从根字体目录查找
+findAndRegisterFonts(fontDir);
+
+let defaultFontFamily = 'sans-serif'; // 默认回退字体
+
+if (registeredFontFamilies.size > 0) {
+    // 定义偏好使用的字体顺序
+    const preferredFonts = [
+        'Source Han Serif SC', // 优先使用解决问题的思源宋体
+        'SimHei',
+        'Source Han Sans SC',
+        'Microsoft YaHei'
+    ];
+
+    for (const font of preferredFonts) {
+        if (registeredFontFamilies.has(font)) {
+            defaultFontFamily = font;
+            break;
+        }
+    }
+
+    // 如果没有找到任何偏好的字体，则使用注册列表中的第一个作为后备
+    if (defaultFontFamily === 'sans-serif') {
+        defaultFontFamily = registeredFontFamilies.values().next().value;
+    }
+} else {
+    console.warn(`警告: 在 ${fontDir} 目录及其子目录中未找到任何期望的字体。`);
+    console.warn(`请确保以下任一字体存在: ${Object.keys(desiredFonts).join(', ')}`);
+    console.warn(`中文渲染可能显示为方块。`);
 }
+
+console.log(`默认渲染字体设置为: ${defaultFontFamily}`);
 
 // 设置百度API参数 - 实际应用中应从环境变量或配置文件中读取
 // 这里使用PaddleOCR作为备用选项，避免API错误阻塞功能
@@ -1031,7 +1081,7 @@ async function renderTranslatedText(imagePath, textRegions) {
       // 3. 动态调整字号以适应区域宽度
       while (!textFits && fontSize > 12) {
         // 使用已注册的中文字体 'SimHei'
-        ctx.font = `${fontSize}px SimHei`;
+        ctx.font = `${fontSize}px "${defaultFontFamily}"`;
         const metrics = ctx.measureText(textToRender);
         
         // 区域宽度调整 - 允许文本有更大的宽度，稍微超出框也可以
@@ -1050,7 +1100,7 @@ async function renderTranslatedText(imagePath, textRegions) {
       // 4. 短文本优化 - 使用粗体并增大字体
       if (textToRender.length <= 3 && region.width > 20 && region.height > 20) {
         fontSize = Math.min(fontSize * 1.2, region.height * 1.2);
-        ctx.font = `${fontSize}px SimHei`;
+        ctx.font = `${fontSize}px "${defaultFontFamily}"`;
       }
       
       // 检测是否为竖排文本
@@ -1088,7 +1138,7 @@ async function renderTranslatedText(imagePath, textRegions) {
           (region.height / chars.length) * charFactor
         );
         
-        ctx.font = `${charHeight}px SimHei`;
+        ctx.font = `${charHeight}px "${defaultFontFamily}"`;
         
         // 计算起始位置，确保文本居中
         const charSpacing = chars.length <= 3 ? 0.85 : 0.9;
